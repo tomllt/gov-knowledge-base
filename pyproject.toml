@@ -20,8 +20,11 @@ classifiers = [
 ]
 
 dependencies = [
+    "cryptography>=41",
+    "pillow>=10",
     # 仅基础工程依赖；解析栈依赖（pypdfium2/pdfplumber/pytesseract/python-docx/selectolax）
     # 在 Stage 2/3 按需引入。
+    "pypdf>=6.18.0",
 ]
 
 [project.optional-dependencies]
