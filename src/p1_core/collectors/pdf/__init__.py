@@ -1,5 +1,20 @@
-"""PDF 文件采集器占位。
+"""PDF 文件采集器公共 API。"""
 
-Stage 2 (P1-F01) 阶段将在此实现文件扫描、编码识别、敏感字段脱敏等
-具体采集逻辑。本阶段仅保留包占位与测试桩,确保目录结构稳定。
-"""
+from p1_core.collectors.pdf.collector import PdfFileCollector
+from p1_core.collectors.pdf.ingest_store import (
+    IngestLog,
+    IngestRecord,
+    IngestStatus,
+    IngestStore,
+)
+from p1_core.collectors.pdf.redactor import RedactionResult, SensitiveRedactor
+
+__all__ = [
+    "IngestLog",
+    "IngestRecord",
+    "IngestStatus",
+    "IngestStore",
+    "PdfFileCollector",
+    "RedactionResult",
+    "SensitiveRedactor",
+]
