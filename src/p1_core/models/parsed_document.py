@@ -61,12 +61,14 @@ class ParsedDocument:
         parsed_at: 解析完成时间（必须带时区）。
         format: 解析得到的文档格式。
         blocks: 解析中间块序列。
+        render_required: 是否需要浏览器/JS 渲染（如 SPA 骨架页）。
     """
 
     raw_doc_id: str
     parsed_at: datetime
     format: DocumentFormat
     blocks: tuple[ParsedBlock, ...]
+    render_required: bool = False
 
     def __post_init__(self) -> None:
         require_nonempty_str(self.raw_doc_id, field="raw_doc_id")
@@ -89,6 +91,7 @@ class ParsedDocument:
             "raw_doc_id": self.raw_doc_id,
             "parsed_at": self.parsed_at.isoformat(),
             "format": self.format.value,
+            "render_required": self.render_required,
             "blocks": [
                 {
                     "block_id": b.block_id,
@@ -119,6 +122,7 @@ class ParsedDocument:
                 parsed_at=datetime.fromisoformat(parsed_at_raw),
                 format=DocumentFormat(format_raw),
                 blocks=blocks,
+                render_required=bool(data.get("render_required", False)),
             )
         except KeyError as exc:
             msg = f"ParsedDocument missing key: {exc.args[0]}"
