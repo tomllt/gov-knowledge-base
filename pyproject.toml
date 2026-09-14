@@ -20,8 +20,9 @@ classifiers = [
 ]
 
 dependencies = [
-    # 仅基础工程依赖；解析栈依赖（pypdfium2/pdfplumber/pytesseract/python-docx/selectolax）
-    # 在 Stage 2/3 按需引入。
+    "pdfplumber>=0.11,<1",
+    "pypdfium2>=4.30,<5",
+    "pillow>=10,<12",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ dev = [
     "pytest>=8.3,<9",
     "pytest-cov>=5.0,<7",
     "hypothesis>=6.100,<7",
+    "reportlab>=4.2,<5",
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
     "pre-commit>=4.0,<5",
@@ -117,6 +119,7 @@ select = [
 ignore = [
     "PLR0913",  # too-many-arguments (collectors need many config keys)
     "PLR2004",  # magic value (used in docs/asserts intentionally)
+    "TRY003",
     "RUF002",   # docstring contains ambiguous fullwidth punctuation (中文文档故意保留)
     "RUF003",   # comment contains ambiguous fullwidth punctuation
 ]
@@ -162,4 +165,8 @@ exclude = [
     "dist",
 ]
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2"]
+ignore_missing_imports = true
 
