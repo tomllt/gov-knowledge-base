@@ -60,8 +60,13 @@ class HeadingPath:
         if not isinstance(raw_parts, list):
             msg = "HeadingPath.parts must be list[str]"
             raise SerializationError(msg)
-        parts = tuple(str(p) for p in raw_parts)
-        return cls(parts)
+        parts: list[str] = []
+        for part in raw_parts:
+            if not isinstance(part, str):
+                msg = "HeadingPath.parts must be list[str]"
+                raise SerializationError(msg)
+            parts.append(part)
+        return cls(tuple(parts))
 
 
 __all__ = ["HeadingPath"]

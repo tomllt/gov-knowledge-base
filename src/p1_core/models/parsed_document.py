@@ -1,10 +1,11 @@
-"""解析阶段产物：`ParsedDocument` 与 `ParsedBlock`。"""
+"""Parsed document domain models."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Literal, TypeAlias
 
 from p1_core.exceptions import SerializationError, ValidationError
 from p1_core.models._validators import (
@@ -16,23 +17,70 @@ from p1_core.models._validators import (
 from p1_core.models.enums import BlockType, DocumentFormat
 from p1_core.models.heading import HeadingPath
 
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+@dataclass(frozen=True, slots=True)
+class ParseWarning:
+    page_num: int
+    reason: str
+    severity: Literal["warning", "error"]
+
+    def __post_init__(self) -> None:
+        require_positive_page(self.page_num, field="page_num")
+        require_nonempty_str(self.reason, field="reason")
+
+    def to_dict(self) -> JsonObject:
+        return {"page_num": self.page_num, "reason": self.reason, "severity": self.severity}
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedTable:
+    rows: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedPage:
+    page_num: int
+    text: str
+    is_scanned: bool = False
+    tables: tuple[ParsedTable, ...] = ()
+    warnings: tuple[ParseWarning, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_positive_page(self.page_num, field="page_num")
+        if not isinstance(self.text, str):
+            raise ValidationError("text must be str")
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "page_num": self.page_num,
+            "text": self.text,
+            "is_scanned": self.is_scanned,
+            "tables": [{"rows": [list(row) for row in table.rows]} for table in self.tables],
+            "warnings": [warning.to_dict() for warning in self.warnings],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, JsonValue]) -> ParsedPage:
+        tables_raw = data.get("tables", [])
+        warnings_raw = data.get("warnings", [])
+        if not isinstance(tables_raw, list) or not isinstance(warnings_raw, list):
+            raise SerializationError("invalid page collections")
+        page_num = _required_int(data, "page_num")
+        text = _required_str(data, "text")
+        tables = tuple(_table_from_dict(item) for item in tables_raw)
+        warnings = tuple(_warning_from_dict(item) for item in warnings_raw)
+        is_scanned = data.get("is_scanned", False)
+        if not isinstance(is_scanned, bool):
+            raise SerializationError("is_scanned must be bool")
+        return cls(page_num, text, is_scanned, tables, warnings)
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedBlock:
-    """解析阶段产出的中间块。
-
-    解析器对原始文档进行一次扫描后得到的最小结构单元，
-    用于后续切分阶段按语义层级组块。
-
-    Attributes:
-        block_id: 块标识。
-        block_type: 块语义类型。
-        text: 块文本内容。
-        page: 所在页码（无页码概念时为 None）。
-        line_range: 起止行号（含），用于回溯定位。
-        heading_path: 块所属的标题层级路径。
-    """
-
     block_id: str
     block_type: BlockType
     text: str
@@ -43,156 +91,206 @@ class ParsedBlock:
     def __post_init__(self) -> None:
         require_nonempty_str(self.block_id, field="block_id")
         if not isinstance(self.text, str):
-            msg = "text must be str"
-            raise ValidationError(msg)
+            raise ValidationError("text must be str")
         require_positive_page(self.page, field="page")
         require_line_range(self.line_range, field="line_range")
 
 
 @dataclass(frozen=True, slots=True)
 class ParsedDocument:
-    """解析阶段产物。
-
-    由解析器（PDF/Word/HTML）对 `RawDocument` 解析得到；`blocks`
-    已按文档原始顺序排列，可用于按语义切分或重组为完整文本。
-
-    Attributes:
-        raw_doc_id: 关联的 `RawDocument.doc_id`。
-        parsed_at: 解析完成时间（必须带时区）。
-        format: 解析得到的文档格式。
-        blocks: 解析中间块序列。
-    """
-
     raw_doc_id: str
     parsed_at: datetime
     format: DocumentFormat
     blocks: tuple[ParsedBlock, ...]
+    pages: tuple[ParsedPage, ...] = ()
+    metadata: Mapping[str, str] = field(default_factory=dict)
+    parse_warnings: tuple[ParseWarning, ...] = ()
 
     def __post_init__(self) -> None:
         require_nonempty_str(self.raw_doc_id, field="raw_doc_id")
         require_aware_datetime(self.parsed_at, field="parsed_at")
         if not isinstance(self.blocks, tuple):
-            msg = "blocks must be tuple[ParsedBlock, ...]"
-            raise ValidationError(msg)
-        for i, blk in enumerate(self.blocks):
-            if not isinstance(blk, ParsedBlock):
-                msg = f"blocks[{i}] must be ParsedBlock"
-                raise ValidationError(msg)
+            raise ValidationError("blocks must be tuple[ParsedBlock, ...]")
+        for index, block in enumerate(self.blocks):
+            if not isinstance(block, ParsedBlock):
+                raise ValidationError(f"blocks[{index}] must be ParsedBlock")
+        if not isinstance(self.pages, tuple) or not all(
+            isinstance(page, ParsedPage) for page in self.pages
+        ):
+            raise ValidationError("pages must be tuple[ParsedPage, ...]")
+        if not isinstance(self.parse_warnings, tuple) or not all(
+            isinstance(warning, ParseWarning) for warning in self.parse_warnings
+        ):
+            raise ValidationError("parse_warnings must be tuple[ParseWarning, ...]")
 
     def full_text(self, sep: str = "\n\n") -> str:
-        """将所有块文本按序拼接，返回完整文本。"""
-        return sep.join(b.text for b in self.blocks)
+        return sep.join(block.text for block in self.blocks)
 
-    def to_dict(self) -> dict[str, object]:
-        """序列化为可 JSON 化的字典。"""
+    def to_dict(self) -> JsonObject:
         return {
             "raw_doc_id": self.raw_doc_id,
             "parsed_at": self.parsed_at.isoformat(),
             "format": self.format.value,
-            "blocks": [
-                {
-                    "block_id": b.block_id,
-                    "block_type": b.block_type.value,
-                    "text": b.text,
-                    "page": b.page,
-                    "line_range": list(b.line_range) if b.line_range else None,
-                    "heading_path": b.heading_path.to_dict() if b.heading_path else None,
-                }
-                for b in self.blocks
-            ],
+            "blocks": [_block_dict(block) for block in self.blocks],
+            "pages": [page.to_dict() for page in self.pages],
+            "metadata": dict(self.metadata),
+            "parse_warnings": [warning.to_dict() for warning in self.parse_warnings],
         }
 
+    def __hash__(self) -> int:
+        return hash((self.raw_doc_id, self.parsed_at, self.format, self.blocks))
+
     @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> ParsedDocument:
-        """从字典反序列化。"""
+    def from_dict(cls, data: Mapping[str, JsonValue]) -> ParsedDocument:
         try:
-            raw_doc_id = _expect_str(data, "raw_doc_id")
-            parsed_at_raw = _expect_str(data, "parsed_at")
-            format_raw = _expect_str(data, "format")
             blocks_raw = data["blocks"]
-            if not isinstance(blocks_raw, Sequence):
-                msg = "ParsedDocument.blocks must be Sequence"
-                raise SerializationError(msg)
-            blocks: tuple[ParsedBlock, ...] = tuple(_parse_block(item) for item in blocks_raw)
+            if not isinstance(blocks_raw, list):
+                raise SerializationError("ParsedDocument.blocks must be Sequence")
+            pages_raw = data.get("pages", [])
+            warnings_raw = data.get("parse_warnings", [])
+            metadata_raw = data.get("metadata", {})
+            if not isinstance(pages_raw, list) or not isinstance(warnings_raw, list):
+                raise SerializationError("invalid document collections")
+            metadata = _metadata_from_json(metadata_raw)
             return cls(
-                raw_doc_id=raw_doc_id,
-                parsed_at=datetime.fromisoformat(parsed_at_raw),
-                format=DocumentFormat(format_raw),
-                blocks=blocks,
+                _required_str(data, "raw_doc_id"),
+                _parse_datetime(data),
+                _parse_format(data),
+                tuple(_parse_block(item) for item in blocks_raw),
+                tuple(ParsedPage.from_dict(_required_mapping(item, "page")) for item in pages_raw),
+                metadata,
+                tuple(
+                    _warning_from_dict(_required_mapping(item, "parse warning"))
+                    for item in warnings_raw
+                ),
             )
         except KeyError as exc:
-            msg = f"ParsedDocument missing key: {exc.args[0]}"
-            raise SerializationError(msg) from exc
+            raise SerializationError(f"ParsedDocument missing key: {exc.args[0]}") from exc
         except (TypeError, ValueError) as exc:
-            msg = f"ParsedDocument deserialization failed: {exc}"
-            raise SerializationError(msg) from exc
+            raise SerializationError(f"ParsedDocument deserialization failed: {exc}") from exc
 
 
-def _parse_block(item: object) -> ParsedBlock:
-    """从单一块字典构造 `ParsedBlock`，类型不符时抛 `SerializationError`。"""
-    if not isinstance(item, Mapping):
-        msg = "ParsedDocument.blocks[*] must be Mapping"
-        raise SerializationError(msg)
-    block_id = _expect_str(item, "block_id")
-    block_type_raw = _expect_str(item, "block_type")
-    text = _expect_str(item, "text")
-    page_value = item.get("page")
-    page: int | None
-    if page_value is None:
-        page = None
-    elif isinstance(page_value, bool) or not isinstance(page_value, int):
-        msg = "block.page must be int or None"
-        raise SerializationError(msg)
-    else:
-        page = page_value
-    line_range_value = item.get("line_range")
-    line_range: tuple[int, int] | None
-    if line_range_value is None:
-        line_range = None
-    elif (
-        not isinstance(line_range_value, Sequence)
-        or isinstance(line_range_value, (str, bytes))
-        or len(line_range_value) != 2
-    ):
-        msg = "block.line_range must be (int, int) or None"
-        raise SerializationError(msg)
-    else:
-        start_obj, end_obj = line_range_value
-        if (
-            isinstance(start_obj, bool)
-            or isinstance(end_obj, bool)
-            or not isinstance(start_obj, int)
-            or not isinstance(end_obj, int)
-        ):
-            msg = "block.line_range entries must be int"
-            raise SerializationError(msg)
-        line_range = (start_obj, end_obj)
-    heading_path_value = item.get("heading_path")
-    heading_path: HeadingPath | None
-    if heading_path_value is None:
-        heading_path = None
-    elif not isinstance(heading_path_value, Mapping):
-        msg = "block.heading_path must be Mapping or None"
-        raise SerializationError(msg)
-    else:
-        heading_path = HeadingPath.from_dict(heading_path_value)
-    return ParsedBlock(
-        block_id=block_id,
-        block_type=BlockType(block_type_raw),
-        text=text,
-        page=page,
-        line_range=line_range,
-        heading_path=heading_path,
-    )
+def _block_dict(block: ParsedBlock) -> JsonObject:
+    heading_path: JsonValue = None
+    if block.heading_path is not None:
+        heading_path = {"parts": list(block.heading_path.parts)}
+    return {
+        "block_id": block.block_id,
+        "block_type": block.block_type.value,
+        "text": block.text,
+        "page": block.page,
+        "line_range": list(block.line_range) if block.line_range else None,
+        "heading_path": heading_path,
+    }
 
 
-def _expect_str(data: Mapping[str, object], key: str) -> str:
-    """从映射中取出指定键并要求为 `str`；缺失或类型不符抛 `SerializationError`。"""
+def _metadata_from_json(value: JsonValue) -> Mapping[str, str]:
+    if not isinstance(value, dict):
+        raise SerializationError("metadata must be object[str, str]")
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(item, str):
+            raise SerializationError("metadata must be object[str, str]")
+        result[key] = item
+    return result
+
+
+def _required_str(data: Mapping[str, JsonValue], key: str) -> str:
     value = data[key]
     if not isinstance(value, str):
-        msg = f"{key} must be str, got {type(value).__name__}"
-        raise SerializationError(msg)
+        raise SerializationError(f"{key} must be str")
     return value
 
 
-__all__ = ["ParsedBlock", "ParsedDocument"]
+def _required_int(data: Mapping[str, JsonValue], key: str) -> int:
+    value = data[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise SerializationError(f"{key} must be int")
+    return value
+
+
+def _parse_datetime(data: Mapping[str, JsonValue]) -> datetime:
+    return datetime.fromisoformat(_required_str(data, "parsed_at"))
+
+
+def _parse_format(data: Mapping[str, JsonValue]) -> DocumentFormat:
+    return DocumentFormat(_required_str(data, "format"))
+
+
+def _required_mapping(value: JsonValue, field: str) -> dict[str, JsonValue]:
+    if not isinstance(value, dict):
+        raise SerializationError(f"{field} must be Mapping")
+    return value
+
+
+def _table_from_dict(item: JsonValue) -> ParsedTable:
+    if not isinstance(item, dict):
+        raise SerializationError("invalid table")
+    rows = item.get("rows")
+    if not isinstance(rows, list):
+        raise SerializationError("invalid table rows")
+    parsed_rows: list[tuple[str, ...]] = []
+    for row in rows:
+        if not isinstance(row, list) or not all(isinstance(cell, str) for cell in row):
+            raise SerializationError("table cells must be str")
+        parsed_rows.append(tuple(cell for cell in row if isinstance(cell, str)))
+    return ParsedTable(tuple(parsed_rows))
+
+
+def _warning_from_dict(item: JsonValue) -> ParseWarning:
+    if not isinstance(item, dict):
+        raise SerializationError("invalid parse warning")
+    page_num = item.get("page_num")
+    reason = item.get("reason")
+    severity = item.get("severity")
+    if not isinstance(page_num, int) or isinstance(page_num, bool):
+        raise SerializationError("invalid parse warning")
+    if not isinstance(reason, str):
+        raise SerializationError("invalid parse warning")
+    if severity == "warning":
+        return ParseWarning(page_num, reason, "warning")
+    if severity == "error":
+        return ParseWarning(page_num, reason, "error")
+    raise SerializationError("invalid parse warning")
+
+
+def _parse_block(item: JsonValue) -> ParsedBlock:
+    if not isinstance(item, dict):
+        raise SerializationError("ParsedDocument.blocks[*] must be Mapping")
+    page = item.get("page")
+    if page is not None and (not isinstance(page, int) or isinstance(page, bool)):
+        raise SerializationError("block.page must be int or None")
+    line = item.get("line_range")
+    line_range: tuple[int, int] | None = None
+    if line is not None:
+        if not isinstance(line, list) or len(line) != 2:
+            raise SerializationError("block.line_range must be (int, int) or None")
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in line):
+            raise SerializationError("block.line_range entries must be int")
+        start = line[0]
+        end = line[1]
+        if not isinstance(start, int) or not isinstance(end, int):
+            raise SerializationError("block.line_range entries must be int")
+        line_range = (start, end)
+    heading = item.get("heading_path")
+    if heading is not None and not isinstance(heading, dict):
+        raise SerializationError("block.heading_path must be Mapping or None")
+    return ParsedBlock(
+        _required_str(item, "block_id"),
+        BlockType(_required_str(item, "block_type")),
+        _required_str(item, "text"),
+        page,
+        line_range,
+        HeadingPath.from_dict(heading) if isinstance(heading, dict) else None,
+    )
+
+
+__all__ = [
+    "JsonObject",
+    "JsonValue",
+    "ParseWarning",
+    "ParsedBlock",
+    "ParsedDocument",
+    "ParsedPage",
+    "ParsedTable",
+]

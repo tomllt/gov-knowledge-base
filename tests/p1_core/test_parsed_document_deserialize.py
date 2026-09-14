@@ -120,3 +120,53 @@ class TestParsedDocumentConstructionEdgeCases:
                 format=DocumentFormat.PDF,
                 blocks=("not-a-block",),  # type: ignore[arg-type]
             )
+
+
+@pytest.mark.parametrize("field", ["raw_doc_id", "parsed_at", "format"])
+def test_required_document_strings_reject_non_strings(field: str) -> None:
+    bad = _good_parsed_dict()
+    bad[field] = 123
+    with pytest.raises(SerializationError, match=f"{field} must be str"):
+        ParsedDocument.from_dict(bad)
+
+
+@pytest.mark.parametrize("field", ["block_id", "block_type", "text"])
+def test_required_block_strings_reject_non_strings(field: str) -> None:
+    bad = _good_parsed_dict()
+    blocks = bad["blocks"]
+    assert isinstance(blocks, list)
+    block = blocks[0]
+    assert isinstance(block, dict)
+    block[field] = 123
+    with pytest.raises(SerializationError, match=f"{field} must be str"):
+        ParsedDocument.from_dict(bad)
+
+
+def test_invalid_page_and_warning_collections_raise() -> None:
+    bad = _good_parsed_dict()
+    bad["pages"] = "invalid"
+    with pytest.raises(SerializationError, match="invalid document collections"):
+        ParsedDocument.from_dict(bad)
+    bad = _good_parsed_dict()
+    bad["parse_warnings"] = "invalid"
+    with pytest.raises(SerializationError, match="invalid document collections"):
+        ParsedDocument.from_dict(bad)
+
+
+def test_invalid_metadata_and_table_cells_raise() -> None:
+    bad = _good_parsed_dict()
+    bad["metadata"] = {"source": 1}
+    with pytest.raises(SerializationError, match="metadata"):
+        ParsedDocument.from_dict(bad)
+    bad = _good_parsed_dict()
+    bad["pages"] = [{"page_num": 1, "text": "", "tables": [{"rows": [[1]]}]}]
+    with pytest.raises(SerializationError, match="table cells"):
+        ParsedDocument.from_dict(bad)
+
+
+@pytest.mark.parametrize("field", ["pages", "parse_warnings"])
+def test_document_collection_entries_must_be_mappings(field: str) -> None:
+    bad = _good_parsed_dict()
+    bad[field] = ["not-a-mapping"]
+    with pytest.raises(SerializationError, match="must be Mapping"):
+        ParsedDocument.from_dict(bad)

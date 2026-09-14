@@ -70,6 +70,10 @@ class TestHeadingPathSerialization:
         with pytest.raises(SerializationError, match="must be list"):
             HeadingPath.from_dict({"parts": "not-a-list"})
 
+    def test_from_dict_rejects_non_string_parts(self) -> None:
+        with pytest.raises(SerializationError, match="must be list\\[str\\]"):
+            HeadingPath.from_dict({"parts": ["第 1 章", 2]})
+
     def test_from_dict_missing_parts_raises(self) -> None:
         with pytest.raises(SerializationError, match="must be list"):
             HeadingPath.from_dict({})
